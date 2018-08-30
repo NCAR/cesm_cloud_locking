@@ -1,11 +1,11 @@
 module prescribed_cloud
 
-!-------------------------------------------------------------------------- 
+!--------------------------------------------------------------------------
 ! Purpose:
 !
 ! Reads cloud-related fields, puts the them into the physics buffer for use
 ! by radiation
-! 
+!
 !--------------------------------------------------------------------------
 
   use shr_kind_mod, only : r8 => shr_kind_r8
@@ -16,7 +16,7 @@ module prescribed_cloud
 
   implicit none
   private
-  save 
+  save
 
   type(trfld), pointer :: fields(:)
   type(trfile)         :: file
@@ -38,12 +38,13 @@ module prescribed_cloud
 !
 !  character(len=16)  :: fld_name(nflds)             = (/'DEI_rad'  ,'MU_rad' ,'LAMBDAC_rad','ICIWP_rad','ICLWP_rad','DES_rad', &
 !                                                        'ICSWP_rad','CLD_rad','CLDLIQ_rad' ,'CLDICE_rad' /)
-  integer          , parameter :: nflds             = 8
+! BPM: added 1 to nflds; added CLDFSNOW_* into *_name
+  integer          , parameter :: nflds             = 9
   character(len=16), parameter :: cloud_name(nflds) = (/'DEI_in'   ,'MU_in'  ,'LAMBDAC_in' ,'ICIWP_in' ,'ICLWP_in' ,'DES_in' , &
-                                                        'ICSWP_in' ,'CLD_in' /)
+                                                        'ICSWP_in' ,'CLD_in', 'CLDFSNOW_in' /)
 
   character(len=16)  :: fld_name(nflds)             = (/'DEI_rad'  ,'MU_rad' ,'LAMBDAC_rad','ICIWP_rad','ICLWP_rad','DES_rad', &
-                                                        'ICSWP_rad','CLD_rad'/)
+                                                        'ICSWP_rad','CLD_rad', 'CLDFSNOW_rad'/)
 !! JGOmod
   character(len=256) :: filename                    = ' '
   character(len=256) :: filelist                    = ' '
@@ -82,7 +83,7 @@ contains
     implicit none
 
     integer :: ndx, istat, i
-    
+
     if ( has_prescribed_cloud ) then
        if ( masterproc ) then
           write(iulog,*) 'cloud is prescribed in :'//trim(filename)
@@ -136,7 +137,7 @@ subroutine prescribed_cloud_readnl(nlfile)
       prescribed_cloud_rmfile,    &
       prescribed_cloud_cycle_yr,  &
       prescribed_cloud_fixed_ymd, &
-      prescribed_cloud_fixed_tod      
+      prescribed_cloud_fixed_tod
    !-----------------------------------------------------------------------------
 
    ! Initialize namelist variables from local module variables.
@@ -201,13 +202,13 @@ end subroutine prescribed_cloud_readnl
     use ppgrid,       only : pcols, pver
     use string_utils, only : to_lower, GLC
     use physconst,    only : mwdry                ! molecular weight dry air ~ kg/kmole
-    
+
     use physics_buffer, only : physics_buffer_desc, pbuf_get_chunk, pbuf_get_field, pbuf_set_field
 
     implicit none
 
-    type(physics_state), intent(in)    :: state(begchunk:endchunk)                 
-    
+    type(physics_state), intent(in)    :: state(begchunk:endchunk)
+
     type(physics_buffer_desc), pointer :: pbuf2d(:,:)
 
     if( .not. has_prescribed_cloud ) return
@@ -246,11 +247,10 @@ end subroutine prescribed_cloud_readnl
     implicit none
 
     type(file_desc_t) :: piofile
-    
+
     call read_trc_restart( 'prescribed_cloud', piofile, file )
 
   end subroutine read_prescribed_cloud_restart
 !================================================================================================
 
 end module prescribed_cloud
-
