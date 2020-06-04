@@ -33,13 +33,14 @@ Please note we have a code of conduct: behave yourself.
 
 ## Versioning
 
-In the future, we may try to mirror cesm versioning; be aware of that potential change.
+In the future, we may try to mirror cesm versioning; be aware of that potential change. For now, we will just semantic versioning, with "releases" to provide markers of significant changes that we recommend using.
 
 ## Authors
 
 * **Jerry Olson** - developed implementation, wrote most of the code
 * **Brian Medeiros** - helped design the method
 * **Eleanor Middlemas** - helped design the method; extensive testing
+* **Jim Benedict**
 
 ## License
 
