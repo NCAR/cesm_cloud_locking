@@ -1,0 +1,26 @@
+#!/bin/tcsh
+#SBATCH --job-name=sequenceCD
+#SBATCH --ntasks=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=06:00:00
+#SBATCH --account=UMIA0021
+#SBATCH --partition=dav
+#SBATCH --output=sequenceCD.%j
+
+# Runs sequenceCloudData.ncl manually on NCAR-Casper.  Note that to run this script a
+#   CISL project allocation account code must be used.
+# This can be used to do the initial staging of prescribed cloud property files prior
+#   to starting a cloud-locking simulation.
+
+# Set path to sequenceCloudData.ncl
+setenv DIRSCRIPT /glade/u/home/benedict/ys/model/cesm/cesm_cloud_locking/scripts/middlemas
+#setenv DIRSCRIPT ~/ys/model/cesm/scripts_jjb/cesm2_0_1
+
+# Load NCL
+module load ncl
+
+# Go to defined directory and run sequenceCloudData.ncl
+cd $DIRSCRIPT
+ncl sequenceCloudData.ncl
+
+### End of job

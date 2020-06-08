@@ -1,77 +1,115 @@
-; Formerly "resequence_files2.ncl".  This script takes raw CESM2 history
+; This script takes raw CESM2 history
 ;   files containing 2-hourly cloud-related data and resequences them
-;   into new daily files and creates symbolic links to those files.
-;   Intended for use in "cloud-locking" simulations.
+;   into new daily files and creates symbolic links to those files.  The new files and
+;   symlinks are intended for use as inputs to "cloud-locking" simulations.
 ;
-; !!! IMPORTANT: THIS SCRIPT MUST BE RUN MANUALLY FIRST, BEFORE
-;     THE CLOUD LOCKED RUN IS SUBMITTED. IT MAY ALSO NEED TO BE RUN MANUALLY PRIOR TO
-;     CONTINUING A RUN IF THE STAGED CLOUD DATA (in [dirProcData]) AND SYMLINKS
-;     (IN [dirSymLinks]) DO NOT CORRESPOND TO THE PRECEDING RUN, AS THE STAGING DIRS
-;     ARE CURRENTLY OVERWRITTEN FOR EACH SIMULATION JOB AND FOR DIFFERENT SIMULATIONS.
-;     TO RUN MANUALLY, DO THE
+; DISCLAIMER:  THIS SCRIPT MAY NOT BE ERROR-FREE.  ALTHOUGH WE HAVE CONFIDENCE THAT MOST
+;              OPERATIONS IN THIS SCRIPT WORK, WE HAVE NOT ROBUSTLY TESTED EVERY
+;              POSSIBLE OPTION.  THE USER IS ULTIMATELY RESPONSIBLE FOR ENSURING THAT THE
+;              SCRIPT OPERATES AS INTENDED.  IF A BUG IS SUSPECTED, PLEASE CONTACT US
+;              VIA GITHUB AND WE WILL CORRECT IT.
+;
+;
+; !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! 
+; IMPORTANT: THIS SCRIPT MUST BE RUN MANUALLY FIRST, BEFORE
+;     THE CLOUD LOCKED RUN IS STARTED, IN ORDER TO SET UP THE PROPER DATA FILES.
+;     IT MAY ALSO NEED TO BE RUN MANUALLY PRIOR TO
+;     CONTINUING A RUN IF FOR ANY REASON THE 'DATE' VARIABLES IN THE STAGED CLOUD DATA
+;     (in [dirProcData]) AND SYMLINKS (IN [dirSymLinks]) DO NOT MATCH THE EXPECTED RESTART
+;     DATE OF THE RUN ABOUT TO BE RESTARTED.
+;
+;     TO RUN MANUALLY PRIOR TO BEGINNING A CLOUD-LOCKED SIMULATION, DO THE
 ;     FOLLOWING:
 ;     * Best to remove all files in [dirProcData], the processed data directory
 ;     * Best to remove symbolic links (in [dirSymLinks]) to the processed data 
 ;     * Modify and use csh script run_sequenceCloudData to submit script to
-;       pronghorn or geyser to run in batch mode. This is needed because the
-;       script will take >1 hr to run interactively and may time out.
+;       NCAR-Casper to run in batch mode. This is needed because the
+;       script will take >1 hr to run interactively and may "time out" of a Cheyenne
+;       login node.
 ;     * Once the intial run of the script is completed and the data and symlinks are
-;       correctly staged, the cloud-locked run can be submitted.
+;       correctly staged, the cloud-locked simulation can be submitted.
+; !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ;
 ;
-; Main assumptions/requirements:
-;   noleap calendar used for files in raw cloud data pool
-;   porcessed data directory contains 1 yr of data (not multiple years)
-;   all raw files are daily and have same number of time steps in each
-;   first year of prescribed cloud data must be 0001 or after (cannot be 0000)
-;   format of prescribed cloud data, and time step organization in files...
-;   user's operating system can run UNIX's 'rename' command
+; Main assumptions/requirements/defined setup of this script:
+;   (1) noleap calendar used for files in raw cloud data pool
+;   (2) processed data directory contains 1 yr of data (not multiple years)
+;   (3) all raw cloud data files span 1 day and have the same number of time steps in each
+;   (4) the raw cloud data files contain variables, at sub-daily resolution, defined in
+;       'cldVarNames' below
+;   (5) the first year of prescribed cloud data must be 0001 or after (cannot be 0000)
+;   (6) user's operating system has access to standard bash commands 'rename' and 'date'
 ;
 ;-------------------------------------------------------------------
 ; Author:  Jim Benedict
 ; Origin date:  Apr 2018
 ; Modified:
-;   19 Sep 2018, JJB:  Adapted script to handle 3-yr of raw data, and to
-;     randomize the time steps.
+;   19 Sep 2018, JB:
+;         * Adapted script to handle 3-yr of raw data, and to
+;           randomize the time steps.
+;    4 Jun 2020, JB:
+;         * Expanded capability to handle a data pool size of N years instead of
+;           hard-coding 3 years.  Note that the staged prescribed-cloud data directory in
+;           'dirProcData/[CASE]' will still house only 1 year of data.
+;         * Removed hard-coded "h1", allow user to define arbitrary CAM history file
+;           stream 'hTape' associated with cloud data files
+;         * Added wallclock time stamp (printed at end of log)
+;         * Removed obsolete commented-out code
 ; 
 ;-------------------------------------------------------------------
-; Renames files with an appended sequence number
-;-------------------------------------------------------------------
-;
+
 
 load "$NCARG_ROOT/lib/ncarg/nclscripts/csm/gsn_code.ncl"
 load "$NCARG_ROOT/lib/ncarg/nclscripts/csm/gsn_csm.ncl"
 load "$NCARG_ROOT/lib/ncarg/nclscripts/csm/contributed.ncl"
 
 begin
-;------------------- USER-defined variables -------------------------
+
+; ----------------------------------------------------------------------------------------
+; -------------------    (Begin) USER-defined variables    -------------------------------
 
 cloudLockYearStart = 1       ; Year in which cloud locking production run will start (most likely "1", but could be changed to continue an existing run)
-;cloudLockYearStart = 11       ; Year in which cloud locking production run will start (most likely "1", but could be changed to continue an existing run)
 
-useSymLinks     = True       ; Option to use symlinks to data files, or the actual data files themselves
+useSymLinks     = True       ; Recommended setting:  True
+                             ;   Option to use symlinks to data files, or the actual data files themselves
                              ;   Note: If useSymLinks = False, the staged data file names will be -renamed-
                              ;         to include the file sequence number
 
 iseqBeg         = 1          ; file sequencing begins with this number (should be set to "1")
 
+hTape           = 1          ; CAM history file stream associated with existing raw cloud
+                             ;   property files to be resequenced and staged
+
 
 ; - - - - - - - - - - - - - - - - -
 
-dirRawDataPool = "/glade/scratch/eleanorm/clockinput/rawData/B1850_clockoutput"
-;dirRawDataPool = "/glade/p/univ/umia0021/B1850_c201_cloudLockDat_Yr20_22/run"      ; revised, with Q_rad appended to files
-dirProcBase = "/glade/scratch/eleanorm/clockinput"
-dirProcData    = dirProcBase+"/dataFiles/B1850_clock_test"   ; processed data directory. 
+dirRawDataPool = "/glade/p/univ/umia0021/B1850_c201_cloudLockDat_Yr20_22/run"
+dirProcBase    = "/glade/p/univ/umia0021/cloudLockData"
+dirProcData    = dirProcBase+"/dataFiles/B1850_c201_CTL_NyrTest"   ; processed data directory. 
 ; ^^ The name of the folder inside dataFiles should *not* be the rawDataCaseName because 
 ; later on, a unix command will replace rawDataCaseName with procDataCaseName, which will
 ; lead to an error if the folder is also titled rawDataCasename
 
-rawDataCaseName = "B1850_clockoutput" ; case name tag for raw data files (must match dirRawDataPool)
-;rawDataCaseName  = "B1850_c201_cloudLockDat_Yr20_22"  ; case name tag for raw data files (must match dirRawDataPool)
-;procDataCaseName = "B1850_c201_lockDat_Yr20_22"     ; name tag for processed data files... A "_rand", "_seq", or "_match" suffix will be appended depending on type of cloud ordering
-procDataCaseName = "B1850_lockDat_yr1_3"
-                                                   ; *** IF EXTENDING AND EXISTING RUN, ENSURE THAT procDataCaseName MATCHES prescribed_cloud_file IN THE CASE'S USER_NL_CAM (MINUS THE "_random" or "_seq" etc. suffix ***)
-clockCaseName     = "B1850_clocktest_yr1_3"                ; case name for corresponding CESM simulation that -uses- the prescribed cloud data
+rawDataCaseName   = "B1850_c201_cloudLockDat_Yr20_22"         ; case name tag for raw data files (must match dirRawDataPool)
+procDataCaseName  = "B1850_c201_lockDat_Yr20_22_NyrTest"      ; name tag for processed data files... A "_rand", "_seq", or "_match" suffix will be appended depending on type of cloud ordering
+                                              ; *** IF EXTENDING AND EXISTING RUN, ENSURE THAT procDataCaseName MATCHES prescribed_cloud_file IN THE CASE'S USER_NL_CAM (MINUS THE "_random" or "_seq" etc. suffix ***)
+clockCaseName     = "B1850_c201_CLOCK_NyrTest"   ; case name for corresponding CESM simulation that -uses- the prescribed cloud data
+
+
+
+;dirRawDataPool = "/glade/scratch/eleanorm/clockinput/rawData/B1850_clockoutput"
+;dirProcBase    = "/glade/scratch/eleanorm/clockinput"
+;dirProcData    = dirProcBase+"/dataFiles/B1850_clock_test"   ; processed data directory. 
+;; ^^ The name of the folder inside dataFiles should *not* be the rawDataCaseName because 
+;; later on, a unix command will replace rawDataCaseName with procDataCaseName, which will
+;; lead to an error if the folder is also titled rawDataCasename
+;
+;rawDataCaseName   = "B1850_clockoutput"         ; case name tag for raw data files (must match dirRawDataPool)
+;procDataCaseName  = "B1850_lockDat_yr1_3"      ; name tag for processed data files... A "_rand", "_seq", or "_match" suffix will be appended depending on type of cloud ordering
+;                                              ; *** IF EXTENDING AND EXISTING RUN, ENSURE THAT procDataCaseName MATCHES prescribed_cloud_file IN THE CASE'S USER_NL_CAM (MINUS THE "_random" or "_seq" etc. suffix ***)
+;clockCaseName     = "B1850_clocktest_yr1_3"   ; case name for corresponding CESM simulation that -uses- the prescribed cloud data
+
+
 
 dirSymLinks = dirProcBase+"/symLinks/"+rawDataCaseName
 dirLog = dirProcBase+"/logFiles/"+rawDataCaseName
@@ -79,23 +117,22 @@ dirLog = dirProcBase+"/logFiles/"+rawDataCaseName
 ; The variables that will be subbed into the prescribed cloud data file templates
 cldVarNames = (/ "DEI_rad","MU_rad","LAMBDAC_rad","ICIWP_rad","ICLWP_rad","DES_rad", \
                  "ICSWP_rad","CLD_rad","CLDFSNOW_rad","PS"/)
-;cldVarNames = (/ "DEI_rad","MU_rad","LAMBDAC_rad","ICIWP_rad","ICLWP_rad","DES_rad", \
-;                 "ICSWP_rad","CLD_rad","CLDFSNOW_rad","PS","Q_rad" /)
+;;cldVarNames = (/ "DEI_rad","MU_rad","LAMBDAC_rad","ICIWP_rad","ICLWP_rad","DES_rad", \
+;;                 "ICSWP_rad","CLD_rad","CLDFSNOW_rad","PS","Q_rad" /)
 
-; ---------------------------------
+; - - - - - - - - - - - - - - - - -
+
 ; Switches that determines whether and how cloud data will be randomized, sequential, or matched to a previous run
-;seqType      = "matchR"
-;seqType      = "sequential"  
 seqType = "random"
                          ; options: random, sequential, matchR... option "matchS" not supported at this time
                          ;   - random:     chooses random year from raw data pool (slow, ~90 mins on 1 node)
                          ;   - sequential: repeats same single year of cloud data over and over (fast, < 10 mins on 1 node)
                          ;   - matchR:     matches date sequence from previous RANDOMIZED simulation (slow, ~90 mins on 1 node)
                          ;   - matchS:     matches date sequence from previous SEQUENTIAL simulation (fast, < 10 mins on 1 node)
-;sequentialYr = "0022"    ; (string) Only used if seqType = sequential.  Of the years of data
-                         ;   within the raw data pool, the selected year to be cycled over.
-                         ;   Must be of the form "yyyy" (like "0020", not "20")
-matchRunLog  = dirLog    ; (string)  Only used if seqType = matchR.  Path to where logfile of cloud data sequencing exists
+;;sequentialYr = "0022"  ; (string) Only used if seqType = sequential.  Of the years of data
+                         ;          within the raw data pool, the selected year to be cycled over.
+                         ;          Must be of the form "yyyy" (like "0020", not "20")
+matchRunLog  = dirLog    ; (string) Only used if seqType = matchR.  Path to where logfile of cloud data sequencing exists
 
 if(seqType .eq. "matchR") then
   matchLogFirstFile = matchRunLog + "/sequenceLog."+clockCaseName+".YR0001"  ; do NOT include date stamp
@@ -105,7 +142,9 @@ if(seqType .eq. "matchS") then
   print("seqType option 'matchS' not supported at this time. Exiting.")
   exit
 end if
-; ---------------------------------
+; -------------------    (End) USER-defined variables    -------------------------------
+; ----------------------------------------------------------------------------------------
+
 
 
 ;@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
@@ -114,24 +153,16 @@ end if
 
 ; ----------------------------------------------------------------------------------------
 ; Prep work
+
+; Start wallclock timer
+wcStrt = systemfunc("date")
+
 cr = inttochar(10)   ; designator for carriage return when printing
 
 ; Set seed for random number generator
 rseed1 = toint(systemfunc(" date +%s"))   ; returns seconds since 1970-01-01
 print("rseed1: " + rseed1)
 srand(rseed1)
-
-;;;srand(314159265)     ; seed for random number generator -- DO NOT USE
-   ; Setting the random seed to a static number resulted in the same "random" sequence
-   ;   and identical random number statistics each time the program was run
-
-; Set seed for random number generator -- DO NOT USE THIS APPROACH
-;   See https://www.ncl.ucar.edu/Document/Functions/Built-in/random_setallseed.shtml
-;;;rseed1 = toint(systemfunc(" date +%s"))
-;;;rseed2 = toint((12345l*rseed1)%2147483398l)   ; Note the use of the letter "l" here, for long int
-;;;random_setallseed(rseed1, rseed2)
-   ; Setting the random seed to a static number resulted in the same "random" sequence
-   ;   and identical random number statistics each time the program was run
 
 nvar = dimsizes(cldVarNames)
 
@@ -144,14 +175,24 @@ end if
 if(seqType .eq. "matchR") then
   procDataCaseName = procDataCaseName + "_matchR"
 end if
-if(seqType .eq. "matchS") then
-  procDataCaseName = procDataCaseName + "_matchS"
+;;if(seqType .eq. "matchS") then
+;;  procDataCaseName = procDataCaseName + "_matchS"   ; not currently supported
+;;end if
+
+; Check if directory housing symbolic links (dirSymLinks) exists... if not, create it
+if(.not. fileexists(dirSymLinks)) then   ; NCL's fileexists can also be used to check the existence of directories
+  system("mkdir " + dirSymLinks)
+end if
+
+; Check if logfile directory (dirLog) exists... if not, create it
+if(.not. fileexists(dirLog)) then   ; NCL's fileexists can also be used to check the existence of directories
+  system("mkdir " + dirLog)
 end if
 
 
 ; ----------------------------------------------------------------------------------------
-; Check if raw cloud data exists
-cmd = "ls -1 " + dirRawDataPool + "/" + rawDataCaseName + ".cam.h1.*.nc"
+; Check if sub-daily raw cloud property data exist
+cmd = "ls -1 " + dirRawDataPool + "/" + rawDataCaseName + ".cam.h" + hTape + ".*.nc"
 fnamesRawDataAll = systemfunc(cmd)
 if(all(ismissing(fnamesRawDataAll))) then
   print("Raw data files not found in: " + dirRawDataPool)
@@ -171,7 +212,7 @@ nRawYrs = nRawFiles / 365   ; "noleap" calendar assumption here
 
 ; ----------------------------------------------------------------------------------------
 ; Check if processed/sequenced cloud data files already exist... if so, note year stamp
-cmd = "ls -1 " + dirProcData + "/" + procDataCaseName + "*.cam.h1.*.nc"
+cmd = "ls -1 " + dirProcData + "/" + procDataCaseName + "*.cam.h" + hTape + ".*.nc"
 fnamesProcDataAll = systemfunc(cmd)
 if(all(ismissing(fnamesProcDataAll))) then
   haveProcData = False
@@ -190,8 +231,8 @@ else
   icurrentYr   = toint(currentYr)                          ; (integer) year of "current" year, skipping first buffer day (index 0)
 
   ; Record "current year" of processed data files -- read index "1" (current year) rather
-  ;   than "0" (previous year, for buffer only)
-  ; This is only used for print statement on final lines of this script
+  ;   than "0" (previous year, in case "buffer" days added)
+  ; This is *only* used for print statement on final lines of this script
   fTmp  = addfile(fnamesProcDataAll(1), "r")
   yrOld = toint(floor(tofloat(fTmp->date(0))/10000.))
   delete(fTmp)
@@ -206,31 +247,35 @@ if(.not. haveProcData) then
   if(seqType .eq. "sequential" .and. isvar("sequentialYr")) then
     yyyyFirst = sequentialYr
   end if
-  rawDatainProc = systemfunc("ls "+dirProcData)
-  if(all(ismissing(rawDatainProc))) then
-    cmd = "cp -p " + dirRawDataPool + "/" + rawDataCaseName + ".cam.h1." + \
-          yyyyFirst + "*.nc " + dirProcData
-    print(cr + "Copying year " + yyyyFirst + \
-          " data from raw data pool to processed data directory, as file templates...")
-    print("Command is: " + cmd)
-    system(cmd)
+  
+  ; Check if dirProcData exists... if not, create it
+  if(.not. fileexists(dirProcData)) then   ; NCL's fileexists can also be used to check the existence of directories
+    system("mkdir " + dirProcData)
   end if
   
+  cmd = "cp -p " + dirRawDataPool + "/" + rawDataCaseName + ".cam.h" + hTape + "." + \
+        yyyyFirst + "*.nc " + dirProcData
+  print(cr + "Copying year " + yyyyFirst + \
+        " data from raw data pool to processed data directory, as file templates...")
+  print("Command is: " + cmd)
+  system(cmd)
+    
   ; Rename case name, to help distinguish raw data from processed data
-  cmd        = "ls -1 " + dirProcData + "/" + rawDataCaseName + ".cam.h1.*.nc"
+  cmd        = "ls -1 " + dirProcData + "/" + rawDataCaseName + ".cam.h" + hTape + ".*.nc"
   fNamesTmp  = systemfunc(cmd)                   ; all processed data file names
   cmd        = "rename " + rawDataCaseName + " " + procDataCaseName + " " + \
-               dirProcData + "/" + rawDataCaseName + ".cam.h1.*.nc"
+               dirProcData + "/" + rawDataCaseName + ".cam.h" + hTape + ".*.nc"
   print(cr + "Renaming processed-data case names (within file name) from " + \
         rawDataCaseName + " to " + procDataCaseName + "...")
   print("Command is: " + cmd)
   system(cmd)
   print("Renaming successful!")
   
+  ; ----------   BEGIN BUFFER SECTION   ------------------
   ; Also add buffer template files before the first file and after the last file:
   ;   Copy YYYY-12-31 to (YYYY-1)-12-31, and YYYY-01-01 to (YYYY+1)-01-01, where
   ;   "YYYY" is year string of selected year (first year of data from raw data pool)
-  cmd        = "ls -1 " + dirProcData + "/" + procDataCaseName + ".cam.h1.*.nc"
+  cmd        = "ls -1 " + dirProcData + "/" + procDataCaseName + ".cam.h" + hTape + ".*.nc"
   fNamesTmp  = systemfunc(cmd)                   ; all processed data file names (FULL PATH)
   nProcFiles = dimsizes(fNamesTmp)               ; should be 367 (365 days plus the 2 buffer days)
   dateTmp    = str_get_cols(fNamesTmp,-19,-10)   ; date string (YYYY-MM-DD) of each processed file name
@@ -259,10 +304,11 @@ if(.not. haveProcData) then
   print("Command is: " + cmd)
   system(cmd)
   delete([/mmddTmp,dateStrTmp,indTmp,a,dateStrRevised,revisedFileName/])
+  ; ----------   END BUFFER SECTION   ------------------
   
   ; Reassess processed data file directory (after two new buffer files were just been added)
   delete([/fNamesTmp,nProcFiles,dateTmp/])
-  cmd = "ls -1 " + dirProcData + "/" + procDataCaseName + ".cam.h1.*.nc"
+  cmd = "ls -1 " + dirProcData + "/" + procDataCaseName + ".cam.h" + hTape + ".*.nc"
   fnamesProcDataAll = systemfunc(cmd)
   nProcFiles = dimsizes(fnamesProcDataAll)               ; should be 367 (365 days plus the 2 buffer days)
   dateProc   = str_get_cols(fnamesProcDataAll,-19,-10)   ; date string (YYYY-MM-DD) of each processed file name
@@ -272,8 +318,8 @@ if(.not. haveProcData) then
   icurrentYr = toint(currentYr)                          ; (integer) year of "current" year, skipping first buffer day (index 0)
   
   ; Record "current year" of processed data files -- read index "1" (current year) rather
-  ;   than "0" (previous year, for buffer only)
-  ; This is only used for print statement on final lines of this script
+  ;   than "0" (previous year, in case "buffer" days added)
+  ; This is *only* used for print statement on final lines of this script
   fTmp  = addfile(fnamesProcDataAll(1), "r")
   yrOld = toint(floor(tofloat(fTmp->date(0))/10000.))
   delete(fTmp)
@@ -303,15 +349,15 @@ if(.not. haveProcData) then
   
   ; At this time, we should have 367 daily files within the processed data directory.
   ;   These files should be labeled as follows:
-  ;   (1)   [procDataCaseName].cam.h1.[currentYr-1]-12-31.*.nc  date = [cloudLockYearStart-1]1231, final 'date' entry = [cloudLockYearStart]0101
-  ;   (2)   [procDataCaseName].cam.h1.[currentYr]-01-01.*.nc    date = [cloudLockYearStart]0101, final 'date' entry = [cloudLockYearStart]0102
+  ;   (1)   [procDataCaseName].cam.h*.[currentYr-1]-12-31.*.nc  date = [cloudLockYearStart-1]1231, final 'date' entry = [cloudLockYearStart]0101
+  ;   (2)   [procDataCaseName].cam.h*.[currentYr]-01-01.*.nc    date = [cloudLockYearStart]0101, final 'date' entry = [cloudLockYearStart]0102
   ;   ...
-  ;   (366) [procDataCaseName].cam.h1.[currentYr]-12-31.*.nc    date = [cloudLockYearStart]1231, final 'date' entry = [cloudLockYearStart+1]0101
-  ;   (367) [procDataCaseName].cam.h1.[currentYr+1]-01-01.*.nc  date = [cloudLockYearStart+1]0101, final 'date' entry = [cloudLockYearStart+1]0102
+  ;   (366) [procDataCaseName].cam.h*.[currentYr]-12-31.*.nc    date = [cloudLockYearStart]1231, final 'date' entry = [cloudLockYearStart+1]0101
+  ;   (367) [procDataCaseName].cam.h*.[currentYr+1]-01-01.*.nc  date = [cloudLockYearStart+1]0101, final 'date' entry = [cloudLockYearStart+1]0102
   
 end if   ; if haveProcData was false (if script had to do one-time initial setup of processed data directory)
 
-;exit   ; for testing initial staging of processed data
+;exit   ; activate for testing initial staging of processed data
 
 
 ;; ----------------------------------------------------------------------------------------
@@ -351,7 +397,7 @@ if(seqType .eq. "random" .or. seqType .eq. "matchR") then
   
   ; ----------------------------------------------------------------------------------------
   ; If seqType = "matchR", retrieve current year of processed data files -- read index "1" (current year) rather
-  ;   than "0" (previous year, for buffer only)
+  ;   than "0" (previous year, in case "buffer" days have been added)
   ; This is used to read the correct logfile so the cloud data sequencing between original locked run and
   ;   matched locked run are the same
   if(seqType .eq. "matchR") then
@@ -379,20 +425,20 @@ if(seqType .eq. "random" .or. seqType .eq. "matchR") then
                          ; ...but data is then (time, 1), hence the use of data(:,0) for, e.g., logYrValStr below
     logSeqNumStr  = str_get_field(data(:,0), 1, " ")    ; (string) single dimension
     logYrValStr   = str_get_field(data(:,0), 2, " ")    ; (string) 4404 entries: 365 + 2 (buffer) daily files * 12 time steps per file
-    logValYrInt   = stringtointeger(logYrValStr)   ; integer values of logYrValStr
+    logValYrInt   = stringtointeger(logYrValStr)        ; integer values of logYrValStr
     logDateStr    = str_get_field(data(:,0), 3, " ")
     logSrcFileStr = str_get_field(data(:,0), 4, " ")
   end if
   
   ; --------------------------------------------------------------------------------------
-  ; Recursively examine each day and requence processed data files
+  ; Recursively examine each day and resequence processed data files
 
   mmddRawAll = str_get_cols(fnamesRawDataAll,-14,-10)          ; mm-dd format for ALL raw data files
 
 
   tcnt = 0    ; total time step counter
   do idate = 0,nProcFiles-1
-  ;do idate = 0,3        ; for testing only
+;;;  do idate = 0,3        ; for testing only
 
     ; Open existing processed data file, to be used as template
     fProcCurrent = addfile(fnamesProcDataAll(idate), "w")
@@ -402,9 +448,7 @@ if(seqType .eq. "random" .or. seqType .eq. "matchR") then
     mmddCurrent   = str_get_cols(fnamesProcDataAll(idate),-14,-10)  ; mm-dd format of current date
     indRawCurrent = ind(mmddRawAll .eq. mmddCurrent)                ; indices of raw data files matching current mm-dd date stamp
     fnamesRawCurrent = fnamesRawDataAll(indRawCurrent)              ; the names of the raw data files with dates matching current mm-dd date
-    fRaw1 = addfile(fnamesRawCurrent(0),"r")                        ; open the raw data files with dates matching current mm-dd date
-    fRaw2 = addfile(fnamesRawCurrent(1),"r")
-    fRaw3 = addfile(fnamesRawCurrent(2),"r")
+    fRawN = addfiles(fnamesRawCurrent(:),"r")                       ; create list of file pointers to all raw data files with dates matching current mm-dd date
   
     print(fnamesRawCurrent)
   
@@ -463,15 +507,7 @@ if(seqType .eq. "random" .or. seqType .eq. "matchR") then
       ; For this date and time step, designate the "pointer" to one of the random raw-data files
       ; !!! NOTE: This procedure ensures that each cloud variable will be taken from the
       ;           same randomly selected time step
-      if(iRandN(tcnt) .eq. 0) then
-        fRand = fRaw1
-      end if
-      if(iRandN(tcnt) .eq. 1) then
-        fRand = fRaw2
-      end if
-      if(iRandN(tcnt) .eq. 2) then
-        fRand = fRaw3
-      end if
+      fRand = fRawN[iRandN(tcnt)]                        ; select single file pointer from fRawN list
       fNameRandN(tcnt) = fnamesRawCurrent(iRandN(tcnt))  ; (String) file name (from raw data pool) associated with random integer index value
     
       print( sprinti("%10i",tcnt) + sprinti("%5i",iRandN(tcnt)) + " " + fnamesRawCurrent(iRandN(tcnt)) )
@@ -514,7 +550,7 @@ if(seqType .eq. "random" .or. seqType .eq. "matchR") then
   
     ; Clean up within idate loop (each daily file within processed data directory)
     delete([/fProcCurrent,nstepsDay,mmddCurrent,indRawCurrent,fnamesRawCurrent, \
-             fRaw1,fRaw2,fRaw3, \
+             fRawN, \
              dailyVar1,dailyVar2,dailyVar3,dailyVar4,dailyVar5,dailyVar6,dailyVar7, \
              dailyVar8,dailyVar9,dailyVar10/])
     if(dimsizes(cldVarNames) .eq. 11) then
@@ -550,7 +586,7 @@ if(seqType .eq. "random" .or. seqType .eq. "matchR") then
   
   ; ----------------------------------------------------------------------------------------
   ; Record "new current year" of processed data files -- read index "1" (new current year) rather
-  ;   than "0" (new previous year, for buffer only)
+  ;   than "0" (new previous year, in case "buffer" days have been added)
   ; This is only used for logfile (below) and print statement on final lines of this script
   fTmp  = addfile(fnamesProcDataAll(1), "r")
   yrNew = toint(floor(tofloat(fTmp->date(0))/10000.))
@@ -588,31 +624,30 @@ if(seqType .eq. "sequential") then
   if(haveProcData) then    ; if this is the first (offline) time script is run, do NOT increment date (already done above)
                            ; otherwise, need to increment date forward
 
-;    print( cr + "*** sequenceCloudData in TEST mode.  Will not increment prescribed-cloud dates forward. ***" )  
-  print( cr + "Incrementing date forward 1 year" )
+    print( cr + "Incrementing date forward 1 year" )
   
-  ; Loop over each day and increment date
-  do idate = 0,nProcFiles-1
+    ; Loop over each day and increment date
+    do idate = 0,nProcFiles-1
 
-    ; Open existing processed data file
-    fProcCurrent = addfile(fnamesProcDataAll(idate), "w")
+      ; Open existing processed data file
+      fProcCurrent = addfile(fnamesProcDataAll(idate), "w")
 
-    ; If processed data files already existed when the script was run (if not the first time
-    ;   the script has been run during a multi-job simulation), increment date forward one year
-    dateNew = fProcCurrent->date
-    dateNew = (/dateNew + 10000/)   ; increment 'date' forward 1 year, for all processed data files
-    fProcCurrent->date = dateNew
-    delete(dateNew)
+      ; If processed data files already existed when the script was run (if not the first time
+      ;   the script has been run during a multi-job simulation), increment date forward one year
+      dateNew = fProcCurrent->date
+      dateNew = (/dateNew + 10000/)   ; increment 'date' forward 1 year, for all processed data files
+      fProcCurrent->date = dateNew
+      delete(dateNew)
   
-    delete([/fProcCurrent/])
+      delete([/fProcCurrent/])
 
-  end do     ; end idate loop
+    end do     ; end idate loop
     
   end if       ; end if block based on check of haveProcData
   
   ; ----------------------------------------------------------------------------------------
   ; Record "new current year" of processed data files -- read index "1" (new current year) rather
-  ;   than "0" (new previous year, for buffer only)
+  ;   than "0" (new previous year, in case "buffer" days have been added)
   ; This is only used for logfile (below) and print statement on final lines of this script
   fTmp  = addfile(fnamesProcDataAll(1), "r")
   yrNew = toint(floor(tofloat(fTmp->date(0))/10000.))
@@ -632,9 +667,9 @@ end if       ; end if seqType .eq. "sequential"
 
 
 ; ----------------------------------------------------------------------------------------
-; If generating new resequenced data (if running before first job submission to initially
-;   state prescribed-cloud data files), create symbolic links to each daily file in
-;   the processed data directory
+; If generating new resequenced data (if running before first cloud-locked job submission
+;   to initially state prescribed-cloud data files), create symbolic links to each daily
+;   file in the processed data directory
 
 if(.not. haveProcData) then
   print( cr + "At beginning of script, did not detect any template files in processed data directory...")
@@ -646,7 +681,7 @@ if(.not. haveProcData) then
   iseq = iseqBeg
   do i = 0,nProcFiles-1
     print("")
-    fSym = dirSymLinks + "/" + procDataCaseName + ".cam.h1." + sprinti("%0.5i",iseq) + ".nc"
+    fSym = dirSymLinks + "/" + procDataCaseName + ".cam.h" + hTape + "." + sprinti("%0.5i",iseq) + ".nc"
     print("Linked file name : " + fnamesProcDataAll(i))
     print("Symlink file name: " + fSym)
     cmd = "/bin/ln -s " + fnamesProcDataAll(i) + " " + fSym
@@ -657,6 +692,10 @@ if(.not. haveProcData) then
 end if
 
 
+; ----------------------------------------------------------------------------------------
+; Print wallclock time required to run the full script, plus some other details
+print( cr )
+wallClockElapseTime(wcStrt, "sequenceCloudData.ncl", 0)
 
 print( cr + "Script " + get_script_name() + " has completed. Old year stamp: " + \
        sprinti("%0.4i",yrOld) + ", new year stamp: " + sprinti("%0.4i",yrNew) )
