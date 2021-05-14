@@ -1,0 +1,140 @@
+#!/usr/bin/env python
+# Batch system directives
+{{ batchdirectives }}
+import sys, os, time
+os.chdir( '{{ caseroot }}')
+
+_LIBDIR = os.path.join("{{ cimeroot }}", "scripts", "Tools")
+sys.path.append(_LIBDIR)
+
+
+# COMMAND SEQUENCE FOR ADJUSTING CLOUD FIELD DATA FOR "CLOUD LOCKING" SIMULATIONS USING
+#   CESM2_0_beta08 TAG ON -CHEYENNE- SUPERCOMPUTER.  This script will be invoked immediately
+#   following the successful completion of a job submission (and before the next resubmission)
+#   by setting POSTRUN_SCRIPT in env_run.xml to point to this script.
+#
+# Notes:  * This python script was designed to run with python 2.7.7.  Some parts of the
+#           code may need to be changed for older or newer version of python.
+#         
+#         * The basic script flow is:
+#         (1) 
+#
+#         * Remaining bugs:
+#           - none known
+#
+# Created: 21 Mar 2018 by Jim Benedict (jjb278@gmail.com)
+# Modified: 
+#    21 Mar 2018: Created
+#     9 Aug 2018: Modified to make adjustCloudData a subroutine, which prevents the cloud
+#                 locking date adjustments from being done twice (i.e., avoids having to
+#                 write "breadcrumb" files as was done originally).  Note that the ".py"
+#                 should be dropped from POSTRUN_SCRIPT in env_run.xml.  Also, a modification
+#                 to env_mach_specific.xml is now required such that the call to NCL
+#                 script is successful.  The following line must be added to the <modules>
+#                 section of that file:
+#                 <command name="load">ncl</command>
+
+
+# Import required python modules
+import os
+import sys
+import subprocess
+import shutil
+import shlex
+import fileinput
+import datetime
+#from glob import glob
+
+# CESM- and CIME-specific additions:  JJB 25 Sep 2018
+#sys.path.append("/gpfs/u/home/benedict/ys/model/cesm/cesm2_0_1/cime/scripts/Tools")   # Not needed, set via "template"
+from standard_script_setup import *
+from CIME.case import Case
+
+
+
+# ========================================================================================
+# USER-DEFINED INPUTS
+
+# Path to symbolic links to staged cloud field data files
+#cloudDataPath = "/glade/p/umia0021/cloudLockData/symLinks/B1850_c20b8_cam265_CTL"
+
+# Full path and name of NCL script cloudLockChangeDate.ncl
+nclPath = "/glade/work/eleanorm/cases/cesm2_cldlck/scripts"
+nclScript = "sequenceCloudData.ncl"
+
+
+# ========================================================================================
+# FUNCTIONS
+
+def adjustCloudData(caseroot):
+  
+  print("")
+  print("BEGINNING POSTRUN SCRIPT adjustCloudData")
+
+  # probably use xmlquery to get caseroot
+  #caseroot = "/gpfs/u/home/benedict/ys/model/cesm/cesm2_0_1/cases/B1850_c201_CLOCK"
+  caseroot = os.getcwd()   # This script will be run within the current working directory
+
+  # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+  # Use NCO to adjust year value of 'date' variable within all cloud field data files
+
+  # dataFileNames = glob("%s/*.nc" % cloudDataPath)
+  # print dataFileNames
+  # #sys.exit("Requested exit.")
+  # 
+  # for f in dataFileNames:
+  #   cmd = "ncap2 -O -s 'date+=10000' %s %s" % (f, f)
+  #   print "Command is: %s" % cmd
+  #   args = shlex.split(cmd)
+  #   try:
+  #     status = subprocess.check_call(args)
+  #   except IOError as e:
+  #     print e
+  #     sys.exit("Failed command: %s" % cmd)
+
+  # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+  # Alternate approach: Use NCL to "surgically" modify date variable within file using NCL
+  #   Note: I could not find a way to avoid rewriting the entire netCDF file when using the
+  #         NCO approach above. For each file, and when using the -O switch, a "temp" file
+  #         is created, the date variable is modified, and then the entire original file
+  #         is overwritten/clobbered. This is inefficient and time-consuming. The
+  #         NCL approach is considerably faster.
+
+  #cmd = "/glade/u/apps/ch/opt/ncl/6.4.0/intel/17.0.1/bin/ncl -Q %s/%s 'cloudDataPath=\"%s\"'" % (nclPath, nclScript, cloudDataPath)
+  #cmd = "/glade/u/apps/ch/opt/ncl/6.4.0/intel/17.0.1/bin/ncl -Q %s/%s" % (nclPath, nclScript)
+  cmd = "ncl -Q %s/%s" % (nclPath, nclScript)
+  print("From adjustCloudData: Command is: %s" % cmd)
+  args = shlex.split(cmd)
+  try:
+    status = subprocess.check_call(args)
+  except IOError as e:
+    print(e)
+    sys.exit("From adjustCloudData:  Failed command: %s" % cmd)
+
+
+  # Write time-stamped file to case directory
+  fmt       = '%Y-%m-%d %H:%M:%S'
+  timestamp = datetime.datetime.now().strftime(fmt)
+  print("")
+  print("Current timestamp: %s" % timestamp)
+  print("")
+  with open('log.adjustCloudData.txt','a') as outf:
+    outf.write('%s: Prescribed cloud data date adjusted.\n' % timestamp)
+  #with open(timeStamped('log_adjustCloudData.txt'),'w') as outf:
+  #  outf.write('data!')
+  
+  
+  # Resubmit CESM job
+  with Case(caseroot, read_only=False) as case:
+    resubmit_num = case.get_value('RESUBMIT')
+    if resubmit_num > 0:
+      job = case.get_primary_job()
+      case.submit(job=job, resubmit=True)
+
+
+
+# ========================================================================================
+# MAIN SCRIPT
+
+if __name__ == "__main__":
+    adjustCloudData(__doc__)
